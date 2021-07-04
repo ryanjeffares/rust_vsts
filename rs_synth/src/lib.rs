@@ -10,34 +10,34 @@ use vst::event::Event;
 use std::sync::Arc;
 
 mod adsr;
-
-fn mtof(note: u8) -> f32 {
-    const A4_PITCH: i8 = 69;
-    const A4_FREQ: f32 = 440.0;
-    ((f32::from(note as i8 - A4_PITCH)) / 12.0).exp2() * A4_FREQ
-}
+mod oscillator;
 
 #[derive(Default)]
 struct Synth {
-    params: Arc<SynthParameters>,
-    envelope: adsr::ADSR,
-    phase: f32,
-    frequency: f32,
-    output: f32,
-    sample_rate: f64,
-    note_on: bool
+    oscillators: [oscillator::Oscillator; 4],
+    params: Arc<SynthParameters>,            
+    current_velocities: [f32; 4],
+    last_played_osc_index: usize
 }
 
 struct SynthParameters {
-    saw_volume: AtomicFloat,
-    pulse_volume: AtomicFloat
+    oscillator_type: AtomicFloat,
+    volume: AtomicFloat,
+    attack: AtomicFloat,
+    decay: AtomicFloat,
+    sustain: AtomicFloat,
+    release: AtomicFloat    
 }
 
 impl Default for SynthParameters {
     fn default() -> SynthParameters {
         SynthParameters {
-            saw_volume: AtomicFloat::new(0.5),
-            pulse_volume: AtomicFloat::new(0.5)
+            oscillator_type: AtomicFloat::new(0.0),
+            volume: AtomicFloat::new(0.5),
+            attack: AtomicFloat::new(0.0),
+            decay: AtomicFloat::new(0.0),
+            sustain: AtomicFloat::new(1.0),
+            release: AtomicFloat::new(0.0)            
         }
     }
 }
@@ -45,32 +45,48 @@ impl Default for SynthParameters {
 impl PluginParameters for SynthParameters {
     fn get_parameter_text(&self, index: i32) -> String {
         match index {
-            0 => format!("{:.2}", self.saw_volume.get()),
-            1 => format!("{:.2}", self.pulse_volume.get()),
+            0 => if self.oscillator_type.get() < 0.5 { "Saw".to_string() } else { "Pulse".to_string() },
+            1 => format!("{:.2}", self.volume.get()),
+            2 => format!("{:.2}", self.attack.get() * 10.0),
+            3 => format!("{:.2}", self.decay.get() * 10.0),
+            4 => format!("{:.2}", self.sustain.get()),
+            5 => format!("{:.2}", self.release.get() * 10.0),
             _ => "".to_string()
         }
     }
 
     fn get_parameter_name(&self, index: i32) -> String {
         match index {
-            0 => "Saw Volume",
-            1 => "Pulse Volume",
+            0 => "Oscillator Type",
+            1 => "Volume",
+            2 => "Envelope Attack",
+            3 => "Envelope Decay",
+            4 => "Envelope Sustain",
+            5 => "Envelope Release",
             _ => ""
         }.to_string()
     }
 
     fn get_parameter(&self, index: i32) -> f32 {
         match index {
-            0 => self.saw_volume.get(),
-            1 => self.pulse_volume.get(),
+            0 => self.oscillator_type.get(),
+            1 => self.volume.get(),
+            2 => self.attack.get(),
+            3 => self.decay.get(),
+            4 => self.sustain.get(),
+            5 => self.release.get(),
             _ => 0.0
         }
     }
 
     fn set_parameter(&self, index: i32, value: f32) {
         match index {
-            0 => self.saw_volume.set(value),
-            1 => self.pulse_volume.set(value),
+            0 => self.oscillator_type.set(value),
+            1 => self.volume.set(value),
+            2 => self.attack.set(value),
+            3 => self.decay.set(value),
+            4 => self.sustain.set(value),
+            5 => self.release.set(value),
             _ => ()
         }
     }
@@ -79,13 +95,10 @@ impl PluginParameters for SynthParameters {
 impl Plugin for Synth {
     fn new(_host: HostCallback) -> Self {        
         Synth {
-            params: Arc::new(SynthParameters::default()),
-            envelope: adsr::ADSR::default(),
-            phase: 0.0,
-            frequency: 100.0,
-            output: 0.0,
-            sample_rate: 44100.0,
-            note_on: false
+            oscillators: [oscillator::Oscillator::new(); 4],
+            params: Arc::new(SynthParameters::default()),                      
+            current_velocities: [0.0; 4],
+            last_played_osc_index: 0     
         }
     }
 
@@ -97,23 +110,32 @@ impl Plugin for Synth {
             version: 1,
             inputs: 0,
             outputs: 2,
-            parameters: 2,
+            parameters: 6,
             category: Category::Synth,
             ..Default::default()
         }
     }
 
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
+        // i would very much like to NOT have to calculate these each buffer - need a way to call from the parameters set_parameter...
+        for i in 0..4 {
+            self.oscillators[i].envelope.set_params(self.params.attack.get() * 10.0, 
+                self.params.decay.get() * 10.0, 
+                self.params.sustain.get(), 
+                self.params.release.get() * 10.0);
+            self.oscillators[i].set_type(if self.params.oscillator_type.get() < 0.5 { oscillator::OscillatorType::Saw } else { oscillator::OscillatorType::Square });
+        }
         let samples = buffer.samples();
         let (_, mut outputs) = buffer.split();
-        let output_count = outputs.len();
+        let output_count = outputs.len();        
         for sample in 0..samples {
-            let saw_value = self.saw() * self.params.saw_volume.get();
-            //let square_value = self.square() * self.params.pulse_volume.get();
-            //let adsr_val = self.envelope.get_value();
+            let mut sample_value = 0.0;
+            for i in 0..4 {
+                sample_value += self.oscillators[i].process() * self.current_velocities[i];
+            }            
             for buf_idx in 0..output_count {
                 let buff = outputs.get_mut(buf_idx);
-                buff[sample] = (saw_value) * if self.note_on {1.0} else {0.0};// * adsr_val;
+                buff[sample] = sample_value * self.params.volume.get();
             }
         }
     }
@@ -129,9 +151,10 @@ impl Plugin for Synth {
         }
     }
 
-    fn set_sample_rate(&mut self, rate: f32) {
-        self.sample_rate = f64::from(rate);
-        self.envelope.set_sample_rate(self.sample_rate);
+    fn set_sample_rate(&mut self, rate: f32) {        
+        for i in 0..4 {
+            self.oscillators[i].set_sample_rate(rate);
+        }
     }
 
     fn process_events(&mut self, events: &Events) {
@@ -145,40 +168,27 @@ impl Plugin for Synth {
 }
 
 impl Synth {
-    fn saw(&mut self) -> f32 {
-        self.output = self.phase;
-        if self.phase >= 1.0 {
-            self.phase -= 2.0;
-        }
-        self.phase += (1.0 / (self.sample_rate as f32 / self.frequency)) * 2.0;
-        self.output
-    }
-
-    fn square(&mut self) -> f32 {
-        if self.phase >= 1.0 {
-            self.phase -= 1.0;
-        }
-        self.phase += (1.0 / (self.sample_rate as f32 / self.frequency)) * 2.0;
-        if self.phase > 0.5 { 1.0 } else { -1.0 }
-    }
 
     fn process_midi_event(&mut self, data: [u8; 3]) {
         match data[0] {
             128 => self.note_off(data[1]),
-            144 => self.note_on(data[1]),
+            144 => self.note_on(data[1], data[2]),
             _ => ()
         }
     }
 
-    fn note_on(&mut self, note: u8) {
-        self.frequency = mtof(note);
-        //self.envelope.start_note();
-        self.note_on = true;
+    fn note_on(&mut self, note: u8, vel: u8) {                
+        self.current_velocities[self.last_played_osc_index] = f32::from(vel) / 128.0;        
+        self.oscillators[self.last_played_osc_index].note_on(note); 
+        self.last_played_osc_index = (self.last_played_osc_index + 1) % 4;               
     }
 
-    fn note_off(&mut self, note: u8) {
-        //self.envelope.end_note();
-        self.note_on = false;
+    fn note_off(&mut self, note: u8) {           
+        for i in 0..4 {
+            if self.oscillators[i].get_current_note() == note {
+                self.oscillators[i].note_off();                
+            }
+        }
     }
 }
 
