@@ -8,16 +8,26 @@ use vst::api::{Events, Supported};
 use vst::event::Event;
 
 use std::sync::Arc;
+use std::vec::Vec;
 
 mod adsr;
 mod oscillator;
 mod filter;
 
+/*
+*   4 Voice Poly Synth with switchable saw/square wave and resonant lowpass/highpass/bandpass filter
+*   TODO:
+*   Dual osc with individual waveform types and detune
+*   Filter/Pitch envelope
+*   Cross Modulation
+*   Filter/freq lfo
+*/
+
 #[derive(Default)]
 struct Synth {
-    oscillators: [oscillator::Oscillator; 4],
-    params: Arc<SynthParameters>,            
-    current_velocities: [f32; 4],
+    oscillators: Vec<oscillator::Oscillator>,
+    pitch_lfo: oscillator::LFO,
+    params: Arc<SynthParameters>,                
     last_played_osc_index: usize,
     filter: filter::Filter,
     sample_rate: f32
@@ -32,7 +42,9 @@ struct SynthParameters {
     release: AtomicFloat,
     filter_type: AtomicFloat,
     filter_cutoff: AtomicFloat,
-    filter_resonance: AtomicFloat    
+    filter_resonance: AtomicFloat,
+    pitch_lfo_depth: AtomicFloat,
+    pitch_lfo_rate: AtomicFloat 
 }
 
 impl Default for SynthParameters {
@@ -46,7 +58,9 @@ impl Default for SynthParameters {
             release: AtomicFloat::new(0.0),
             filter_type: AtomicFloat::new(0.0),
             filter_cutoff: AtomicFloat::new(1.0),
-            filter_resonance: AtomicFloat::new(0.07)       
+            filter_resonance: AtomicFloat::new(0.07),
+            pitch_lfo_depth: AtomicFloat::new(0.0),
+            pitch_lfo_rate: AtomicFloat::new(0.25)    
         }
     }
 }
@@ -56,13 +70,15 @@ impl PluginParameters for SynthParameters {
         match index {
             0 => if self.oscillator_type.get() < 0.5 { "Saw" } else { "Pulse" }.to_string(),
             1 => format!("{:.2}", self.volume.get()),
-            2 => format!("{:.2}", self.attack.get() * 10.0),
-            3 => format!("{:.2}", self.decay.get() * 10.0),
+            2 => format!("{:.2}", self.attack.get().powi(2) * 10.0),
+            3 => format!("{:.2}", self.decay.get().powi(2) * 10.0),
             4 => format!("{:.2}", self.sustain.get()),
-            5 => format!("{:.2}", self.release.get() * 10.0),
+            5 => format!("{:.2}", self.release.get().powi(2) * 10.0),
             6 => if self.filter_type.get() < 0.33 { "Lowpass" } else if self.filter_type.get() < 0.66 { "Bandpass" } else { "Highpass" }.to_string(),
             7 => format!("{:.2}", (self.filter_cutoff.get().powi(3) * 19980.0) + 20.0),
             8 => format!("{:.2}", (self.filter_resonance.get() * 9.9) + 0.1),
+            9 => format!("{:.2}", self.pitch_lfo_depth.get().powi(2) * 100.0),
+            10 => format!("{:.2}", (self.pitch_lfo_rate.get() * 19.9) + 0.1),
             _ => "".to_string()
         }
     }
@@ -78,6 +94,8 @@ impl PluginParameters for SynthParameters {
             6 => "Filter Type",
             7 => "Filter Cutoff",
             8 => "Filter Resonance",
+            9 => "Pitch LFO Depth",
+            10 => "Pitch LFO Rate",
             _ => ""
         }.to_string()
     }
@@ -93,6 +111,8 @@ impl PluginParameters for SynthParameters {
             6 => self.filter_type.get(),
             7 => self.filter_cutoff.get(),
             8 => self.filter_resonance.get(),
+            9 => self.pitch_lfo_depth.get(),
+            10 => self.pitch_lfo_rate.get(),
             _ => 0.0
         }
     }
@@ -108,17 +128,31 @@ impl PluginParameters for SynthParameters {
             6 => self.filter_type.set(value),
             7 => self.filter_cutoff.set(value),
             8 => self.filter_resonance.set(value),
+            9 => self.pitch_lfo_depth.set(value),
+            10 => self.pitch_lfo_rate.set(value),
             _ => ()
         }
+    }
+
+    fn get_parameter_label(&self, index: i32) -> String {
+        match index {                        
+            2 => "s",
+            3 => "s",            
+            5 => "s",            
+            7 => "Hz",            
+            9 => "%",
+            10 => "Hz",
+            _ => ""
+        }.to_string()
     }
 }
 
 impl Plugin for Synth {
     fn new(_host: HostCallback) -> Self {        
         Synth {
-            oscillators: [oscillator::Oscillator::default(), oscillator::Oscillator::default(), oscillator::Oscillator::default(), oscillator::Oscillator::default()],
-            params: Arc::new(SynthParameters::default()),                      
-            current_velocities: [0.0; 4],
+            oscillators: vec![oscillator::Oscillator::default(), oscillator::Oscillator::default(), oscillator::Oscillator::default(), oscillator::Oscillator::default()],
+            pitch_lfo: oscillator::LFO::default(),
+            params: Arc::new(SynthParameters::default()),        
             last_played_osc_index: 0,
             filter: filter::Filter::default(),
             sample_rate: 44100.0
@@ -132,7 +166,7 @@ impl Plugin for Synth {
             unique_id: 129154,
             version: 1,            
             outputs: 2,
-            parameters: 9,
+            parameters: 11,
             category: Category::Synth,
             ..Default::default()
         }
@@ -141,25 +175,27 @@ impl Plugin for Synth {
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
         // i would very much like to NOT have to calculate these each buffer - need a way to call from the parameters set_parameter...
         for i in 0..4 {
-            self.oscillators[i].envelope.set_params(self.params.attack.get() * 10.0, 
-                self.params.decay.get() * 10.0, 
+            self.oscillators[i].envelope.set_params(self.params.attack.get().powi(2) * 10.0, 
+                self.params.decay.get().powi(2) * 10.0, 
                 self.params.sustain.get(), 
-                self.params.release.get() * 10.0);
+                self.params.release.get().powi(2) * 10.0);
             self.oscillators[i].set_type(if self.params.oscillator_type.get() < 0.5 { oscillator::OscillatorType::Saw } else { oscillator::OscillatorType::Square });            
-        }
+        }        
         self.filter.set_params(self.params.filter_cutoff.get().powi(3), self.params.filter_resonance.get(), self.params.filter_type.get(), self.sample_rate);
+        self.pitch_lfo.set_params(self.params.pitch_lfo_depth.get().powi(2), (self.params.pitch_lfo_rate.get() * 19.9) + 0.1);
         let samples = buffer.samples();
         let (_, mut outputs) = buffer.split();
         let output_count = outputs.len();        
         for sample in 0..samples {
+            let pitch_lfo_amt = self.pitch_lfo.process();
             let mut sample_value = 0.0;
-            for i in 0..4 {
-                sample_value += self.oscillators[i].process() * self.current_velocities[i];
+            for osc in self.oscillators.iter_mut() {
+                sample_value += osc.process_with_pitch_mod(pitch_lfo_amt) * self.params.volume.get();
             }
             sample_value = self.filter.process(sample_value);
             for buf_idx in 0..output_count {
                 let buff = outputs.get_mut(buf_idx);
-                buff[sample] = sample_value * self.params.volume.get();
+                buff[sample] = sample_value;
             }
         }
     }
@@ -177,8 +213,8 @@ impl Plugin for Synth {
 
     fn set_sample_rate(&mut self, rate: f32) {       
         self.sample_rate = rate; 
-        for i in 0..4 {
-            self.oscillators[i].set_sample_rate(self.sample_rate);
+        for osc in self.oscillators.iter_mut() {
+            osc.set_sample_rate(self.sample_rate);
         }
         self.filter.set_sample_rate(self.sample_rate);
     }
@@ -194,7 +230,6 @@ impl Plugin for Synth {
 }
 
 impl Synth {
-
     fn process_midi_event(&mut self, data: [u8; 3]) {
         match data[0] {
             128 => self.note_off(data[1]),
@@ -203,16 +238,15 @@ impl Synth {
         }
     }
 
-    fn note_on(&mut self, note: u8, vel: u8) {                
-        self.current_velocities[self.last_played_osc_index] = f32::from(vel) / 128.0;        
-        self.oscillators[self.last_played_osc_index].note_on(note); 
+    fn note_on(&mut self, note: u8, vel: u8) {                         
+        self.oscillators[self.last_played_osc_index].note_on(note, vel); 
         self.last_played_osc_index = (self.last_played_osc_index + 1) % 4;               
     }
 
     fn note_off(&mut self, note: u8) {           
-        for i in 0..4 {
-            if self.oscillators[i].get_current_note() == note {
-                self.oscillators[i].note_off();                
+        for osc in self.oscillators.iter_mut() {
+            if osc.get_current_note() == note {
+                osc.note_off();
             }
         }
     }
