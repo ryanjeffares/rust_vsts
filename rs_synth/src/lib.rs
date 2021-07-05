@@ -18,7 +18,9 @@ struct Synth {
     oscillators: [oscillator::Oscillator; 4],
     params: Arc<SynthParameters>,            
     current_velocities: [f32; 4],
-    last_played_osc_index: usize
+    last_played_osc_index: usize,
+    filter: filter::Filter,
+    sample_rate: f32
 }
 
 struct SynthParameters {
@@ -30,7 +32,7 @@ struct SynthParameters {
     release: AtomicFloat,
     filter_type: AtomicFloat,
     filter_cutoff: AtomicFloat,
-    filter_resonance: AtomicFloat
+    filter_resonance: AtomicFloat    
 }
 
 impl Default for SynthParameters {
@@ -44,7 +46,7 @@ impl Default for SynthParameters {
             release: AtomicFloat::new(0.0),
             filter_type: AtomicFloat::new(0.0),
             filter_cutoff: AtomicFloat::new(1.0),
-            filter_resonance: AtomicFloat::new(0.1)         
+            filter_resonance: AtomicFloat::new(0.07)       
         }
     }
 }
@@ -58,9 +60,9 @@ impl PluginParameters for SynthParameters {
             3 => format!("{:.2}", self.decay.get() * 10.0),
             4 => format!("{:.2}", self.sustain.get()),
             5 => format!("{:.2}", self.release.get() * 10.0),
-            6 => if self.filter_type.get() < 0.5 { "Lowpass" } else { "Highpass" }.to_string(),
-            7 => format!("{:.2}", (self.filter_cutoff.get() * 19980.0) + 20.0),
-            8 => format!("{:.2}", self.filter_resonance.get() * 10.0),
+            6 => if self.filter_type.get() < 0.33 { "Lowpass" } else if self.filter_type.get() < 0.66 { "Bandpass" } else { "Highpass" }.to_string(),
+            7 => format!("{:.2}", (self.filter_cutoff.get().powi(3) * 19980.0) + 20.0),
+            8 => format!("{:.2}", (self.filter_resonance.get() * 9.9) + 0.1),
             _ => "".to_string()
         }
     }
@@ -114,10 +116,12 @@ impl PluginParameters for SynthParameters {
 impl Plugin for Synth {
     fn new(_host: HostCallback) -> Self {        
         Synth {
-            oscillators: [oscillator::Oscillator::new(); 4],
+            oscillators: [oscillator::Oscillator::default(), oscillator::Oscillator::default(), oscillator::Oscillator::default(), oscillator::Oscillator::default()],
             params: Arc::new(SynthParameters::default()),                      
             current_velocities: [0.0; 4],
-            last_played_osc_index: 0     
+            last_played_osc_index: 0,
+            filter: filter::Filter::default(),
+            sample_rate: 44100.0
         }
     }
 
@@ -126,8 +130,7 @@ impl Plugin for Synth {
             name: "Oscicrate".to_string(),
             vendor: "Ryan Jeffares".to_string(),
             unique_id: 129154,
-            version: 1,
-            inputs: 0,
+            version: 1,            
             outputs: 2,
             parameters: 9,
             category: Category::Synth,
@@ -142,9 +145,9 @@ impl Plugin for Synth {
                 self.params.decay.get() * 10.0, 
                 self.params.sustain.get(), 
                 self.params.release.get() * 10.0);
-            self.oscillators[i].set_type(if self.params.oscillator_type.get() < 0.5 { oscillator::OscillatorType::Saw } else { oscillator::OscillatorType::Square });
-            self.oscillators[i].set_filter_params(self.params.filter_type.get(), self.params.filter_cutoff.get(), self.params.filter_resonance.get());
+            self.oscillators[i].set_type(if self.params.oscillator_type.get() < 0.5 { oscillator::OscillatorType::Saw } else { oscillator::OscillatorType::Square });            
         }
+        self.filter.set_params(self.params.filter_cutoff.get().powi(3), self.params.filter_resonance.get(), self.params.filter_type.get(), self.sample_rate);
         let samples = buffer.samples();
         let (_, mut outputs) = buffer.split();
         let output_count = outputs.len();        
@@ -152,7 +155,8 @@ impl Plugin for Synth {
             let mut sample_value = 0.0;
             for i in 0..4 {
                 sample_value += self.oscillators[i].process() * self.current_velocities[i];
-            }            
+            }
+            sample_value = self.filter.process(sample_value);
             for buf_idx in 0..output_count {
                 let buff = outputs.get_mut(buf_idx);
                 buff[sample] = sample_value * self.params.volume.get();
@@ -171,10 +175,12 @@ impl Plugin for Synth {
         }
     }
 
-    fn set_sample_rate(&mut self, rate: f32) {        
+    fn set_sample_rate(&mut self, rate: f32) {       
+        self.sample_rate = rate; 
         for i in 0..4 {
-            self.oscillators[i].set_sample_rate(rate);
+            self.oscillators[i].set_sample_rate(self.sample_rate);
         }
+        self.filter.set_sample_rate(self.sample_rate);
     }
 
     fn process_events(&mut self, events: &Events) {

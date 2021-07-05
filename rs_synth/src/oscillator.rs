@@ -1,5 +1,4 @@
 use crate::adsr;
-use crate::filter;
 
 fn mtof(note: u8) -> f32 {
     const A4_PITCH: i8 = 69;
@@ -7,19 +6,16 @@ fn mtof(note: u8) -> f32 {
     ((f32::from(note as i8 - A4_PITCH)) / 12.0).exp2() * A4_FREQ
 }
 
-#[derive(Copy, Clone)]
 pub struct Oscillator {
     frequency: f32,
     note: u8,
     phase: f32,
     output: f32,
     sample_rate: f32,
-    osc_type: OscillatorType,
-    filter: filter::Filter,
+    osc_type: OscillatorType,    
     pub envelope: adsr::ADSR
 }
 
-#[derive(Copy, Clone)]
 pub enum OscillatorType {
     Saw, Square
 }
@@ -32,27 +28,13 @@ impl Default for Oscillator {
             phase: 0.0,
             output: 0.0,
             sample_rate: 44100.0,
-            osc_type: OscillatorType::Saw,
-            filter: filter::Filter::default(),
+            osc_type: OscillatorType::Saw,        
             envelope: adsr::ADSR::default()
         }
     }
 }
 
 impl Oscillator {
-    pub fn new() -> Self {
-        Oscillator {
-            frequency: 261.63,
-            note: 60,
-            phase: 0.0,
-            output: 0.0,
-            sample_rate: 44100.0,
-            osc_type: OscillatorType::Saw,
-            filter: filter::Filter::default(),
-            envelope: adsr::ADSR::default()
-        }
-    }
-
     pub fn note_on(&mut self, note: u8) {
         self.frequency = mtof(note);
         self.note = note;
@@ -71,15 +53,9 @@ impl Oscillator {
         self.osc_type = osc_type;
     }
 
-    pub fn set_filter_params(&mut self, filter_type: f32, cutoff: f32, res: f32) {
-        self.filter.set_type(if filter_type < 0.5 { filter::FilterType::Lowpass } else { filter::FilterType::Highpass });
-        self.filter.set_params((cutoff * 19980.0) + 20.0, res * 10.0);
-    }
-
     pub fn set_sample_rate(&mut self, sr: f32) {
         self.sample_rate = sr;
-        self.envelope.set_sample_rate(self.sample_rate);
-        self.filter.set_sample_rate(self.sample_rate);
+        self.envelope.set_sample_rate(self.sample_rate);        
     }
 
     // must call every sample
@@ -91,8 +67,7 @@ impl Oscillator {
                 if self.phase >= 1.0 {
                     self.phase -= 2.0;
                 }
-                self.phase += (1.0 / (self.sample_rate / self.frequency)) * 2.0;                
-                //self.filter.process(self.output) * self.envelope.get_output()
+                self.phase += (1.0 / (self.sample_rate / self.frequency)) * 2.0;                                
                 self.output * self.envelope.get_output()
             }
             OscillatorType::Square => {
@@ -100,7 +75,7 @@ impl Oscillator {
                     self.phase -= 1.0;
                 }
                 self.phase += 1.0 / (self.sample_rate / self.frequency);
-                if self.phase < 0.5 { 1.0 } else { -1.0 }
+                if self.phase < 0.5 { 1.0 * self.envelope.get_output() } else { -1.0 * self.envelope.get_output() }
             }            
         }
     }
