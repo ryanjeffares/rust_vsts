@@ -1,4 +1,5 @@
 use crate::adsr;
+use crate::filter;
 
 fn mtof(note: u8) -> f32 {
     const A4_PITCH: i8 = 69;
@@ -14,6 +15,7 @@ pub struct Oscillator {
     output: f32,
     sample_rate: f32,
     osc_type: OscillatorType,
+    filter: filter::Filter,
     pub envelope: adsr::ADSR
 }
 
@@ -31,6 +33,7 @@ impl Default for Oscillator {
             output: 0.0,
             sample_rate: 44100.0,
             osc_type: OscillatorType::Saw,
+            filter: filter::Filter::default(),
             envelope: adsr::ADSR::default()
         }
     }
@@ -45,6 +48,7 @@ impl Oscillator {
             output: 0.0,
             sample_rate: 44100.0,
             osc_type: OscillatorType::Saw,
+            filter: filter::Filter::default(),
             envelope: adsr::ADSR::default()
         }
     }
@@ -67,9 +71,15 @@ impl Oscillator {
         self.osc_type = osc_type;
     }
 
+    pub fn set_filter_params(&mut self, filter_type: f32, cutoff: f32, res: f32) {
+        self.filter.set_type(if filter_type < 0.5 { filter::FilterType::Lowpass } else { filter::FilterType::Highpass });
+        self.filter.set_params((cutoff * 19980.0) + 20.0, res * 10.0);
+    }
+
     pub fn set_sample_rate(&mut self, sr: f32) {
         self.sample_rate = sr;
         self.envelope.set_sample_rate(self.sample_rate);
+        self.filter.set_sample_rate(self.sample_rate);
     }
 
     // must call every sample
@@ -81,7 +91,8 @@ impl Oscillator {
                 if self.phase >= 1.0 {
                     self.phase -= 2.0;
                 }
-                self.phase += (1.0 / (self.sample_rate / self.frequency)) * 2.0;
+                self.phase += (1.0 / (self.sample_rate / self.frequency)) * 2.0;                
+                //self.filter.process(self.output) * self.envelope.get_output()
                 self.output * self.envelope.get_output()
             }
             OscillatorType::Square => {
@@ -89,7 +100,7 @@ impl Oscillator {
                     self.phase -= 1.0;
                 }
                 self.phase += 1.0 / (self.sample_rate / self.frequency);
-                if self.phase > 0.5 { 1.0 * self.envelope.get_output() } else { -1.0 * self.envelope.get_output() }
+                if self.phase < 0.5 { 1.0 } else { -1.0 }
             }            
         }
     }

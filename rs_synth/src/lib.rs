@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 mod adsr;
 mod oscillator;
+mod filter;
 
 #[derive(Default)]
 struct Synth {
@@ -26,7 +27,10 @@ struct SynthParameters {
     attack: AtomicFloat,
     decay: AtomicFloat,
     sustain: AtomicFloat,
-    release: AtomicFloat    
+    release: AtomicFloat,
+    filter_type: AtomicFloat,
+    filter_cutoff: AtomicFloat,
+    filter_resonance: AtomicFloat
 }
 
 impl Default for SynthParameters {
@@ -37,7 +41,10 @@ impl Default for SynthParameters {
             attack: AtomicFloat::new(0.0),
             decay: AtomicFloat::new(0.0),
             sustain: AtomicFloat::new(1.0),
-            release: AtomicFloat::new(0.0)            
+            release: AtomicFloat::new(0.0),
+            filter_type: AtomicFloat::new(0.0),
+            filter_cutoff: AtomicFloat::new(1.0),
+            filter_resonance: AtomicFloat::new(0.1)         
         }
     }
 }
@@ -45,12 +52,15 @@ impl Default for SynthParameters {
 impl PluginParameters for SynthParameters {
     fn get_parameter_text(&self, index: i32) -> String {
         match index {
-            0 => if self.oscillator_type.get() < 0.5 { "Saw".to_string() } else { "Pulse".to_string() },
+            0 => if self.oscillator_type.get() < 0.5 { "Saw" } else { "Pulse" }.to_string(),
             1 => format!("{:.2}", self.volume.get()),
             2 => format!("{:.2}", self.attack.get() * 10.0),
             3 => format!("{:.2}", self.decay.get() * 10.0),
             4 => format!("{:.2}", self.sustain.get()),
             5 => format!("{:.2}", self.release.get() * 10.0),
+            6 => if self.filter_type.get() < 0.5 { "Lowpass" } else { "Highpass" }.to_string(),
+            7 => format!("{:.2}", (self.filter_cutoff.get() * 19980.0) + 20.0),
+            8 => format!("{:.2}", self.filter_resonance.get() * 10.0),
             _ => "".to_string()
         }
     }
@@ -63,6 +73,9 @@ impl PluginParameters for SynthParameters {
             3 => "Envelope Decay",
             4 => "Envelope Sustain",
             5 => "Envelope Release",
+            6 => "Filter Type",
+            7 => "Filter Cutoff",
+            8 => "Filter Resonance",
             _ => ""
         }.to_string()
     }
@@ -75,6 +88,9 @@ impl PluginParameters for SynthParameters {
             3 => self.decay.get(),
             4 => self.sustain.get(),
             5 => self.release.get(),
+            6 => self.filter_type.get(),
+            7 => self.filter_cutoff.get(),
+            8 => self.filter_resonance.get(),
             _ => 0.0
         }
     }
@@ -87,6 +103,9 @@ impl PluginParameters for SynthParameters {
             3 => self.decay.set(value),
             4 => self.sustain.set(value),
             5 => self.release.set(value),
+            6 => self.filter_type.set(value),
+            7 => self.filter_cutoff.set(value),
+            8 => self.filter_resonance.set(value),
             _ => ()
         }
     }
@@ -110,7 +129,7 @@ impl Plugin for Synth {
             version: 1,
             inputs: 0,
             outputs: 2,
-            parameters: 6,
+            parameters: 9,
             category: Category::Synth,
             ..Default::default()
         }
@@ -124,6 +143,7 @@ impl Plugin for Synth {
                 self.params.sustain.get(), 
                 self.params.release.get() * 10.0);
             self.oscillators[i].set_type(if self.params.oscillator_type.get() < 0.5 { oscillator::OscillatorType::Saw } else { oscillator::OscillatorType::Square });
+            self.oscillators[i].set_filter_params(self.params.filter_type.get(), self.params.filter_cutoff.get(), self.params.filter_resonance.get());
         }
         let samples = buffer.samples();
         let (_, mut outputs) = buffer.split();
