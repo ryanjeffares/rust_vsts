@@ -132,7 +132,7 @@ impl Plugin for Distortion {
         }
     }
 
-    fn process(&mut self, buffer: &mut AudioBuffer<f32>) {        
+    fn process(&mut self, buffer: &mut AudioBuffer<f32>) {                
         for (input_buffer, output_buffer) in buffer.zip() {            
             for (input_sample, output_sample) in input_buffer.iter().zip(output_buffer) {
                 *output_sample = self.process_sample(*input_sample);
