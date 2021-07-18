@@ -5,6 +5,7 @@ fn calculate_coefficient(rate: f32, ratio: f32) -> f32 {
     log.exp()
 }
 
+#[derive(Clone)]
 pub struct ADSR {
     attack: f32,
     decay: f32,
@@ -23,7 +24,7 @@ pub struct ADSR {
     output: f32
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 enum ADSRState {
     Idle, Attack, Decay, Sustain, Release
 }

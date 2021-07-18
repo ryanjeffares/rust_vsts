@@ -1,5 +1,6 @@
 use crate::adsr;
 
+#[derive(Clone)]
 pub struct Filter {    
     sample_rate: f32,
     y: [f32; 3],
@@ -10,11 +11,17 @@ pub struct Filter {
     envelope: adsr::ADSR
 }
 
+#[derive(Clone)]
 struct FilterState {
     g: f32,
     r2: f32,
     h: f32,
     sample_rate: f32
+}
+
+#[derive(Clone)]
+pub enum FilterType {
+    Lowpass, Bandpass, Highpass
 }
 
 impl Default for FilterState {
@@ -41,10 +48,6 @@ impl FilterState {
     pub fn set_sample_rate(&mut self, sr: f32) {
         self.sample_rate = sr;
     }
-}
-
-pub enum FilterType {
-    Lowpass, Bandpass, Highpass
 }
 
 impl Default for Filter {
